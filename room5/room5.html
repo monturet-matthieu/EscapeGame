@@ -1,0 +1,818 @@
+<!DOCTYPE HTML>
+<html lang="fr">
+
+<head>
+  <title>DUT MMI - SAE Programmer la 3D pour le web</title>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="images/icon.png" />
+  <style>
+    body {
+      margin: 0px;
+      padding: 0px;
+      background-color: #777777;
+    }
+
+    #canvas {
+      display: block;
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      right: 10px;
+      bottom: 10px;
+      background-color: #000000;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="canvas"></div>
+  <div id="info">
+    <table>
+      <tr>
+        <td>Click position:</td>
+        <td><input type="text" id="positions" value="(0;0)" class="info" /></td>
+      </tr>
+      <tr>
+        <td>Clicked object:</td>
+        <td><input type="text" id="obj_name" value="vide" class="info" /></td>
+      </tr>
+
+    </table>
+
+  </div>
+  <style>
+    #info {
+      z-index: 1;
+      color: white;
+    }
+
+    #canvas {
+      z-index: -1;
+    }
+  </style>
+  <script type="module">
+    const param = {
+      name: "room5",
+      goal: "goal5",
+      initPos: [36.0, 43, -65], // 3DS Max position(x/10,z/10,-y/10)
+      initTgt: [41, 42.5, -53.5],
+      next: "../room6/room6.html",
+      spots: [
+        { name: "spot3", angle: 80, on: true, intensity: 0.5, shadow: true, helper: false },
+        { name: "spot4", angle: 80, on: true, intensity: 0.25, shadow: true, helper: false },
+      ]
+    };
+    const buttonOrder = []; //...
+    var buttonLevel = 0;
+    import * as THREE from '../three.js-dev/build/three.module.js';
+    import { ColladaLoader } from '../three.js-dev/examples/jsm/loaders/ColladaLoader.js';
+    import { FirstPersonControls } from '../three.js-dev/examples/jsm/controls/FirstPersonControls.js';
+    var clickInfo = [];
+    var obstacles = [];
+    var animations = []; // tableau qui contient la liste de objets cliquables
+    var container = document.getElementById("canvas");
+
+    // variables utilisées par les deux fonctions
+    var renderer, camera, scene, controls;
+    var clock = new THREE.Clock();
+    var SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_LEFT, SCREEN_TOP;
+    const raycaster = new THREE.Raycaster();
+    var Vdown = new THREE.Vector3(0, -1, 0);
+    var isMoving = false;
+    var verrou;
+    var fp;
+    var porte;
+    function onClickEvent(event) {
+      clickInfo.userHasClicked = true;
+      clickInfo.mouse = new THREE.Vector2();
+      clickInfo.mouse.x = ((event.clientX - SCREEN_LEFT) / SCREEN_WIDTH) * 2 - 1;
+      clickInfo.mouse.y = -((event.clientY - SCREEN_TOP) / SCREEN_HEIGHT) * 2 + 1;
+    }
+
+
+    function onKeyEvent(event) {
+      console.log(event.code);
+      if (event.code == 'Escape') isMoving = !isMoving;
+    }
+
+    function onWindowResize() {
+      let w = container.offsetWidth;
+      let h = container.offsetHeight;
+      SCREEN_WIDTH = container.scrollWidth;
+      SCREEN_HEIGHT = container.scrollHeight;
+      SCREEN_LEFT = container.offsetLeft - container.scrollLeft + container.clientLeft;
+      SCREEN_TOP = container.offsetTop - container.scrollTop + container.clientTop;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+
+    function start() {
+      // initialisation du moteur de rendu
+      renderer = new THREE.WebGLRenderer();
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;//THREE.PCFShadowMap;
+
+      // création d'un canvas dans un div
+      renderer.setClearColor(0x222222, 1);
+      window.addEventListener('resize', onWindowResize, false);
+
+      container.appendChild(renderer.domElement);
+      container.addEventListener('click', onClickEvent, false);
+      document.addEventListener('keydown', onKeyEvent);
+
+      let w = container.offsetWidth;
+      let h = container.offsetHeight;
+      SCREEN_WIDTH = container.scrollWidth;
+      SCREEN_HEIGHT = container.scrollHeight;
+      SCREEN_LEFT = container.offsetLeft - container.scrollLeft + container.clientLeft;
+      SCREEN_TOP = container.offsetTop - container.scrollTop + container.clientTop;
+      renderer.setSize(w, h);
+
+      // création d'une caméra perspective(angle d'ouverture, rapport largeur/hauteur, near, far)
+      camera = new THREE.PerspectiveCamera(60, w / h, 1, 6000);
+      camera.position.set(param.initPos[0], param.initPos[1], param.initPos[2]);
+      camera.lookAt(param.initTgt[0], param.initTgt[1], param.initTgt[2]);
+      controls = new FirstPersonControls(camera);
+      controls.lookSpeed = 0.10;
+      controls.movementSpeed = 10;
+      controls.lookVertical = true;
+      controls.constrainVertical = true;
+      controls.verticalMin = Math.PI / 6.0; // entre PI/6 et 5PI/6
+      controls.verticalMax = 5.0 * Math.PI / 6.0;
+
+      // création de la scène
+      scene = new THREE.Scene();
+      scene.add(camera);
+
+      clock.start();
+      var loader = new ColladaLoader();
+      loader.load('./models/' + param.name + ".dae", onLoaded, onProgress, onError);
+
+      // sources de lumière
+      let ambientLight = new THREE.AmbientLight(0x202020);
+      scene.add(ambientLight);
+    }
+
+    function animate() {
+      let dt = clock.getDelta();
+      // rendu de la scène
+      let savePos = camera.position.clone(); // copie la position de la caméra avant de la modifier
+      if (isMoving) controls.update(dt);
+      // forcer la caméra à y=50
+      camera.position.y = savePos.y;
+
+      // camera sur le sol
+      raycaster.set(camera.position, Vdown); // rayon qui part de la camera et va vers le bas
+      let intersections = raycaster.intersectObjects(obstacles, true); // intersections avec le sol
+      if (intersections.length > 0) { // si l'intersection existe
+        let dh = (16 - intersections[0].distance) * 20;
+        camera.position.y += dh * dt;
+        if (intersections[0].object.name == param.goal) {
+          window.location.href = param.next;
+        }
+      } else {
+        // remettre la caméra à la position précédente
+        camera.position.x = savePos.x;
+        camera.position.z = savePos.z;
+      }
+
+      renderer.render(scene, camera);
+
+      // détection du picking
+      if (clickInfo.userHasClicked) {
+        document.getElementById("positions").value =
+          "(" + parseInt(0.5 * (clickInfo.mouse.x + 1) * SCREEN_WIDTH + SCREEN_LEFT) +
+          ";" + parseInt(-0.5 * (clickInfo.mouse.y - 1) * SCREEN_HEIGHT + SCREEN_TOP) + ")";
+        clickInfo.userHasClicked = false; // pret pour le clique suivant
+        raycaster.setFromCamera(clickInfo.mouse, camera);
+        let intersections = raycaster.intersectObjects(scene.children, true);
+        let obj = null;
+        let i = 0;
+        while (i < intersections.length && intersections[i].object.visible == false) {
+          i++;
+        }
+        if (i < intersections.length) {
+          obj = intersections[i].object; // l'objet de la premiere intersection
+          // si l'objet à un nom vide alors on sélectionne son pere
+          while (obj != null && obj.name == "") { // cherche le nom du parent
+            obj = obj.parent;
+          }
+          document.getElementById('obj_name').value = obj.name + " uv= (" +
+            intersections[0].uv.x.toFixed(2) + "," +
+            intersections[0].uv.y.toFixed(2) + ")";
+          if (obj) { // Lance la fonction onclick sur l'objet cliqué
+            console.log(obj.name);
+            animations.forEach(object => {
+              if (object.name == obj.name) {
+                object.onClick(intersections[i]);
+              }
+            });
+          }
+        }
+      }
+
+      animations.forEach(object => { // mettre à jour l'animation sur tous les objects cliquables
+        object.updateAnimation(dt);
+      });
+
+      // lancement du frame suivant
+      requestAnimationFrame(animate);
+    }
+
+    function onLoaded(collada) {
+      let object = collada.scene;
+
+      scene.add(object);
+      object.scale.set(0.1, 0.1, 0.1);
+
+      // traite le tableau de sources de lumières
+      param.spots.forEach(spot => {
+        let light = object.getObjectByName(spot.name);
+        light.penumbra = (spot.angle - 10) / (spot.angle - 10);
+        light.angle = spot.angle * Math.PI / 180;
+        light.visible = spot.on;
+        light.castShadow = spot.shadow;
+        light.intensity = spot.intensity;
+        light.target = object.getObjectByName(spot.name + '.Target');
+        if (spot.helper) {
+          const spotLightHelper = new THREE.SpotLightHelper(light);
+          scene.add(spotLightHelper);
+        }
+        if (spot.shadow) {
+          light.shadow.mapSize.width = 2048;
+          light.shadow.mapSize.height = 2048;
+          light.shadow.camera.near = 1;
+          light.shadow.camera.far = 1000;
+          light.shadow.camera.fov = spot.angle;
+          
+          //Porte impossible à passer
+          fp = object.getObjectByName("floor_porte")
+          fp.save_position = fp.position.clone()
+          fp.position.set(1000,1000,1000)
+
+        }
+      });
+      
+      // Faire tourner la poignée
+      let poignee = object.getObjectByName('poigne');
+        animations.push(poignee); // cadre est un objet cliquable/animable
+        poignee.animationStatus = 0; // création de l'attibut animationStatus init à 0
+
+          poignee.onClick = function (intersection) {
+            if (this.animationStatus == 0) {
+              this.t = 0; // au moment du clique, on lance le chronometre
+              this.a0 = 0; // angle de début du mouvement
+              this.a1 = -Math.PI / 4; // angle de fin du mouvement
+              this.duration = 0.25; // durée du mouvement
+              this.animationStatus = 1; // déclenche l'abaissement
+            }
+          }
+        
+
+          poignee.t = 0;
+          poignee.updateAnimation = function (dt) {
+            // angle : l'angle en fonction de l'heure courante
+            this.t += dt; // ajoute le temps écouler entre les deux frames
+            let angle = this.a0 + this.t * (this.a1 - this.a0) / (this.duration);
+            switch (this.animationStatus) {
+              case 1:
+                this.rotation.z = angle;
+                if (this.t > this.duration) {
+                  this.rotation.z = this.a1;
+                  this.animationStatus = 2;
+                  this.t = 0;
+                  this.duration = 0.5; // durée d'attente
+                  //déclencher le verrou
+                }
+                break;
+              case 2:
+                if (this.t > this.duration) {
+                  this.rotation.z = this.a1;
+                  this.animationStatus = 2;
+                  this.t = 0; // au moment du clique, on lance le chronometre
+                  this.a0 = -Math.PI / 4; // angle de début du mouvement
+                  this.a1 = 0; // angle de fin du mouvement
+                  this.duration = 0.25; // durée du mouvement
+                  this.animationStatus = 3; // déclenche la remontée
+                }
+                break;
+              case 3:
+                this.rotation.z = angle;
+                if (this.t > this.duration) {
+                  this.rotation.z = this.a1;
+                  this.animationStatus = 0;
+                }
+                break;
+            }
+          }
+        
+
+      verrou = object.getObjectByName('verrou');
+      animations.push(verrou); // cadre est un objet cliquable/animable
+      verrou.animationStatus = 0; // création de l'attibut animationStatus init à 0
+
+      verrou.onClick = function (intersection) {
+
+      }
+
+      verrou.t = 0;
+      verrou.updateAnimation = function (dt) {
+        // angle : l'angle en fonction de l'heure courante
+        this.t += dt; // ajoute le temps écouler entre les deux frames
+        let x = this.x0 + this.t * (this.x1 - this.x0) / (this.duration);
+        switch (this.animationStatus) {
+          case 1:
+            this.position.x = x;
+            if (this.t > this.duration) {
+              this.position.x = this.x1;
+              this.animationStatus = 2;
+              this.t = 0;
+              this.duration = 0.5; // durée d'attente
+
+              //déclencher la porte
+              porte.t = 0;
+              porte.animationStatus = 1;
+              porte.a0 = 0;
+              porte.a1 = -Math.PI / 2;
+              porte.duration = 2;
+            }
+            break;
+          case 3:
+            this.position.x = x;
+            if (this.t > this.duration) {
+              this.position.x = this.x1;
+              this.animationStatus = 0;
+            }
+            break;
+        }
+      }
+
+      porte = object.getObjectByName('porte');
+      animations.push(porte); // cadre est un objet cliquable/animable
+      porte.animationStatus = 0; // création de l'attibut animationStatus init à 0
+      porte.onClick = function (intersection) {
+        // redessiner la texture avec un click en intersection.uv.x, intersection.uv.y
+      }
+      porte.t = 0;
+      porte.updateAnimation = function (dt) {
+        // angle : l'angle en fonction du l'heure courante
+        this.t += dt; // ajoute le temps écoulé entre les deux frames
+        let angle = this.a0 + this.t * (this.a1 - this.a0) / this.duration;
+        switch (this.animationStatus) {
+          case 1:
+            this.rotation.y = angle; // réduit l'angle de cadre de 'angle'
+            if (this.t > this.duration) { // si il atteint le mini
+              this.rotation.y = this.a1;
+              this.animationStatus = 2; // on change le status
+              this.t = 0;
+              this.duration = 5;
+            }
+            break;
+          case 2:
+            if (this.t > this.duration) {
+              this.animationStatus = 3;
+              this.t = 0;
+              this.duration = 2;
+              this.a0 = -Math.PI / 2;
+              this.a1 = 0;
+
+            }
+            break;
+        }}
+         //--- Light1//
+      let light1 = object.getObjectByName('spot3');
+      light1.visible = true;
+
+
+      //--- le code pour le button 4 // 
+      let button4 = object.getObjectByName('button4'); // variable button pointe sur le bouton 2
+      button4.rotation.x = THREE.Math.degToRad(-10.0);
+      let myMat = button4.material.clone();
+      button4.material = myMat;
+      myMat.color = new THREE.Color(0.0, 1.0, 0.0); // Change la couleur du bouton
+      myMat.emissive = new THREE.Color(0.0, 1.0, 0.0);
+      // new attribut to store the state of the switch button
+      button4.state = true;
+
+      button4.onClick = function (intersection) {
+        this.state = !this.state; // inverse l'état de la lumière
+        light1.visible = !light1.visible; // inverse l'état de la lumière
+        console.log(light1.visible)
+        // changer la couleur du bouton en vert si ON en rouge si OFF
+        if (light1.visible) {
+          this.material.color = new THREE.Color(0.0, 1.0, 0.0);
+          this.material.emissive = new THREE.Color(0.0, 1.0, 0.0);
+        } else {
+          this.material.color = new THREE.Color(1.0, 0.0, 0.0);
+          this.material.emissive = new THREE.Color(1.0, 0.0, 0.0);
+        }
+        this.rotation.x = THREE.Math.degToRad(this.state ? 10.0 : -10.0);
+
+        if (!light1.visible && !light2.visible) {
+          chiffres.visible = true;
+          chiffres.material.emissive = new THREE.Color(0x00ff00);
+        } else {
+          chiffres.visible = false;
+        }
+      }
+      button4.updateAnimation = function (dt) {  // pas d'animeation dans le temps
+      }
+      animations.push(button4);
+
+
+      //--- Light2//
+      let light2 = object.getObjectByName('spot4');
+      light2.visible = true;
+
+
+      //--- le code pour le button 5 // 
+      let button5 = object.getObjectByName('button5'); // variable button pointe sur le bouton 2
+      button5.rotation.x = THREE.Math.degToRad(-10.0);
+      let myMat1 = button5.material.clone();
+      button5.material = myMat1;
+      myMat1.color = new THREE.Color(0.0, 1.0, 0.0); // Change la couleur du bouton
+      myMat1.emissive = new THREE.Color(0.0, 1.0, 0.0);
+      // new attribut to store the state of the switch button
+      button5.state = true;
+
+      button5.onClick = function (intersection) {
+        this.state = !this.state; // inverse l'état de la lumière
+        light2.visible = !light2.visible; // inverse l'état de la lumière
+        console.log(light1.visible)
+        // changer la couleur du bouton en vert si ON en rouge si OFF
+        if (light2.visible) {
+          this.material.color = new THREE.Color(0.0, 1.0, 0.0);
+          this.material.emissive = new THREE.Color(0.0, 1.0, 0.0);
+        } else {
+          this.material.color = new THREE.Color(1.0, 0.0, 0.0);
+          this.material.emissive = new THREE.Color(1.0, 0.0, 0.0);
+        }
+        this.rotation.x = THREE.Math.degToRad(this.state ? 10.0 : -10.0);
+        if (!light1.visible && !light2.visible) {
+          chiffres.visible = true;
+          chiffres.material.emissive = new THREE.Color(0x00ff00);
+        } else {
+          chiffres.visible = false;
+        }
+        }
+      
+      button5.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(button5);
+
+          //zoom
+          function zoom(scene, camera, amount) {
+          const newFov = camera.fov + amount;
+          camera.fov = newFov;
+          camera.updateProjectionMatrix();
+          }
+          document.addEventListener('wheel', function(event) {
+          zoom(scene, camera, event.deltaY * 0.05);
+          });
+
+
+
+          // cadre et rotation
+          let cadre = object.getObjectByName('cadre2');
+          animations.push(cadre);
+          cadre.animationStatus = 0;
+          let texture = new THREE.TextureLoader().load('./images/cake.jpg');
+          cadre.onClick = function (intersection) {
+          const point1 = new THREE.Vector2(0.63, 0.54);
+          const point2 = new THREE.Vector2(0.87, 0.57);
+          
+          
+          let verrou = object.getObjectByName('verrou');
+      animations.push(verrou); // cadre est un objet cliquable/animable
+      verrou.animationStatus = 0; // création de l'attibut animationStatus init à 0
+
+      verrou.onClick = function (intersection) {
+
+      }
+
+      verrou.t = 0;
+      verrou.updateAnimation = function (dt) {
+        // angle : l'angle en fonction de l'heure courante
+        this.t += dt; // ajoute le temps écouler entre les deux frames
+        let x = this.x0 + this.t * (this.x1 - this.x0) / (this.duration);
+        switch (this.animationStatus) {
+          case 1:
+            this.position.x = x;
+            this.position.x = this.x1;
+            this.animationStatus = 2;
+            this.duration = 0.5; // durée d'attente
+
+            break;
+          case 3:
+            this.position.x = x;
+            if (this.t > this.duration) {
+              this.position.x = this.x1;
+              this.animationStatus = 0;
+            }
+            break;
+        }
+      }
+          let d1 = (intersection.uv.x - point1.x) * (intersection.uv.x - point1.x) +
+            (intersection.uv.y - point1.y) * (intersection.uv.y - point1.y);
+          let d2 = (intersection.uv.x - point2.x) * (intersection.uv.x - point2.x) +
+            (intersection.uv.y - point2.y) * (intersection.uv.y - point2.y);
+          this.t = 0;
+          if (this.animationStatus == 0 && (d1 < 0.03 * 0.03 || d2 < 0.03 * 0.03)) {
+            this.a0 = 0;
+            this.a1 = -Math.PI / 2;
+            this.duration = 2.0;
+            this.animationStatus = 1;
+          } else if (this.animationStatus == 2) {
+            this.a0 = -Math.PI / 2;
+            this.a1 = 0;
+            this.duration = 1.0;
+            this.animationStatus = 3;
+          }
+        }
+
+        cadre.t = 0;
+        cadre.updateAnimation = function (dt) {
+          this.t += dt;
+          let angle = this.a0 + this.t * (this.a1 - this.a0) / this.duration;
+          switch (this.animationStatus) {
+            case 1:
+              this.rotation.z = angle;
+              if (this.t > this.duration) {
+                this.rotation.z = this.a1;
+                this.animationStatus = 2;
+              }
+              break;
+            case 3:
+              this.rotation.z = angle;
+              if (this.t > this.duration) {
+                this.rotation.z = this.a1;
+                this.animationStatus = 0;
+              }
+              break;
+          }
+        }
+
+
+          //chiffres caché
+          let chiffres = object.getObjectByName('Chiffres');
+          chiffres.penumbra = 43.0 / 60.0;
+          chiffres.distance = 170.0 / 2.54;
+          let targetChiffres = object.getObjectByName('Chiffres.Target');
+          chiffres.target = targetChiffres;
+
+          if (!light1.visible && !light2.visible) {
+            chiffres.visible = true;
+            chiffres.material.emissive = new THREE.Color(0x00ff00);
+          } else {
+            chiffres.visible = false;
+          }
+
+          chiffres.power = Math.PI;
+
+
+          
+            //code bouton//
+
+      let buttonBleu = object.getObjectByName('interieur1');
+      buttonOrder.push(buttonBleu);
+      buttonBleu.order = 7;
+      buttonBleu.state = false;
+      let myMat2 = buttonBleu.material.clone();
+      buttonBleu.material = myMat2;
+      myMat2.color = new THREE.Color(0.0, 0.0, 1.0); // Change la couleur du bouton
+      myMat2.emissive = new THREE.Color(0.0, 0.0, 1.0);
+      myMat2.emissiveIntensity = 0;
+      // new attribut to store the state of the switch buttonBleu
+      buttonBleu.onClick = function (intersection) {
+        this.state = !this.state;
+        console.log(this);
+        if (this.state) {
+          this.material.emissiveIntensity = 1.0;
+        } else {
+          this.material.emissiveIntensity = 0.0;
+        }
+        highlightButtons(this);
+      }
+      buttonBleu.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(buttonBleu);
+
+
+      let buttonViolet = object.getObjectByName('interieur2');
+      buttonOrder.push(buttonViolet);
+      buttonViolet.order = 5;
+      buttonViolet.state = false;
+      let myMat3 = buttonViolet.material.clone();
+      buttonViolet.material = myMat3;
+      myMat3.color = new THREE.Color(0.5, 0.0, 1.0); // Change la couleur du bouton
+      myMat3.emissive = new THREE.Color(0.5, 0.0, 1.0);
+      myMat3.emissiveIntensity = 0;
+      // new attribut to store the state of the switch buttonViolet
+      buttonViolet.onClick = function (intersection) {
+        this.state = !this.state;
+        console.log(this);
+        if (this.state) {
+          this.material.emissiveIntensity = 1.0;
+        } else {
+          this.material.emissiveIntensity = 0.0;
+        }
+        highlightButtons(this);
+      }
+      buttonViolet.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(buttonViolet);
+
+      let buttonVert = object.getObjectByName('interieur3');
+      buttonOrder.push(buttonVert);
+      buttonVert.order = 1;
+      buttonVert.state = false;
+      let myMat4 = buttonVert.material.clone();
+      buttonVert.material = myMat4;
+      myMat4.color = new THREE.Color(0.0, 1.0, 0.0); // Change la couleur du bouton
+      myMat4.emissive = new THREE.Color(0.0, 1.0, 0.0);
+      myMat4.emissiveIntensity = 0;
+      // new attribut to store the state of the switch buttonVert
+      buttonVert.onClick = function (intersection) {
+        this.state = !this.state;
+        console.log(this);
+        if (this.state) {
+          this.material.emissiveIntensity = 1.0;
+        } else {
+          this.material.emissiveIntensity = 0.0;
+        }
+        highlightButtons(this);
+      }
+      buttonVert.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(buttonVert);
+
+
+      let buttonOrange = object.getObjectByName('interieur4');
+      buttonOrder.push(buttonOrange);
+      buttonOrange.order = 6;
+      buttonOrange.state = false;
+      let myMat5 = buttonOrange.material.clone();
+      buttonOrange.material = myMat5;
+      myMat5.color = new THREE.Color(1.0, 0.5, 0.0); // Change la couleur du bouton
+      myMat5.emissive = new THREE.Color(1.0, 0.5, 0.0);
+      myMat5.emissiveIntensity = 0;
+      // new attribut to store the state of the switch buttonOrange
+      buttonOrange.onClick = function (intersection) {
+        this.state = !this.state;
+        console.log(this);
+        if (this.state) {
+          this.material.emissiveIntensity = 1.0;
+        } else {
+          this.material.emissiveIntensity = 0.0;
+        }
+        highlightButtons(this);
+      }
+      buttonOrange.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(buttonOrange);
+
+      let buttonJaune = object.getObjectByName('interieur5');
+      buttonOrder.push(buttonJaune);
+      buttonJaune.order = 3;
+      buttonJaune.state = false;
+      let myMat6 = buttonJaune.material.clone();
+      buttonJaune.material = myMat6;
+      myMat6.color = new THREE.Color(1.0, 1.0, 0.0); // Change la couleur du bouton
+      myMat6.emissive = new THREE.Color(1.0, 1.0, 0.0);
+      myMat6.emissiveIntensity = 0;
+      // new attribut to store the state of the switch buttonJaune
+      buttonJaune.onClick = function (intersection) {
+        this.state = !this.state;
+        console.log(this);
+        if (this.state) {
+          this.material.emissiveIntensity = 1.0;
+        } else {
+          this.material.emissiveIntensity = 0.0;
+        }
+        highlightButtons(this);
+      }
+      buttonJaune.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(buttonJaune);
+
+      let buttonRose = object.getObjectByName('interieur6');
+      buttonOrder.push(buttonRose);
+      buttonRose.order = 2;
+      buttonRose.state = false;
+      let myMat7 = buttonRose.material.clone();
+      buttonRose.material = myMat7;
+      myMat7.color = new THREE.Color(1.0, 0.0, 1.0); // Change la couleur du bouton
+      myMat7.emissive = new THREE.Color(1.0, 0.0, 1.0);
+      myMat7.emissiveIntensity = 0;
+      // new attribut to store the state of the switch buttonRose
+      buttonRose.onClick = function (intersection) {
+        this.state = !this.state;
+        console.log(this);
+        if (this.state) {
+          this.material.emissiveIntensity = 1.0;
+        } else {
+          this.material.emissiveIntensity = 0.0;
+        }
+        highlightButtons(this);
+      }
+      buttonRose.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(buttonRose);
+
+
+      let buttonRouge = object.getObjectByName('interieur7');
+      buttonOrder.push(buttonRouge);
+      buttonRouge.order = 4;
+      buttonRouge.state = false;
+      let myMat8 = buttonRouge.material.clone();
+      buttonRouge.material = myMat8;
+      myMat8.color = new THREE.Color(1.0, 0.0, 0.0); // Change la couleur du bouton
+      myMat8.emissive = new THREE.Color(1.0, 0.0, 0.0);
+      myMat8.emissiveIntensity = 0;
+      // new attribut to store the state of the switch buttonRouge
+      buttonRouge.onClick = function (intersection) {
+        this.state = !this.state;
+        console.log(this);
+        if (this.state) {
+          this.material.emissiveIntensity = 1.0;
+        } else {
+          this.material.emissiveIntensity = 0.0;
+        }
+        highlightButtons(this);
+      }
+      buttonRouge.updateAnimation = function (dt) {  // pas d'animation dans le temps
+      }
+      animations.push(buttonRouge);
+
+
+      let floor = object.getObjectByName('floor');
+      floor.visible = false;
+      obstacles.push(floor);
+
+      let room = object.getObjectByName('room101');
+      setShadow(room, true, true);
+
+      let goal = object.getObjectByName(param.goal);
+      goal.material[0].transparent = true;
+      animations.push(goal);
+      goal.onClick = function (intersection) { };
+      goal.updateAnimation = function (dt) {
+        this.rotation.z += 0.5 * dt;
+      }
+      obstacles.push(goal);
+    }
+
+    function onProgress(data) {
+    };
+
+    function onError(data) {
+      console.error(data);
+    };
+
+    function setShadow(object, cast, receive) {
+      object.castShadow = cast;
+      object.receiveShadow = receive;
+      object.children.forEach(child => setShadow(child, cast, receive));
+    }
+
+    function highlightButtons(button) {
+
+
+    buttonLevel++;
+    if (button.order != buttonLevel) {
+      console.log("perdu");
+      buttonLevel = 0;
+      buttonOrder.forEach(button => {
+        button.state = false;
+        button.material.emissiveIntensity = 0;
+      });
+    }
+    
+    if (buttonLevel === 7) {
+        verrou.t = 0;
+        verrou.animationStatus = 1;
+        verrou.x0 = 10.8 * 25.4;
+        verrou.x1 = 9.9 * 25.4;
+        verrou.duration = 2;
+        porte.t = 0;
+        porte.animationStatus = 1;
+        porte.a0 = 0;
+        porte.a1 = -Math.PI / 2;
+        porte.duration = 2;
+        fp.position.set(fp.save_position.x, fp.save_position.y,  fp.save_position.z);
+      }
+};
+
+
+
+    /******************************************************************************/
+    /* PROGRAMME PRINCIPAL ********************************************************/
+    start();
+    animate();
+
+  </script>
+</body>
+
+</html>
